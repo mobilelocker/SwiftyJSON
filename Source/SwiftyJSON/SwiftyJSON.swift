@@ -79,6 +79,8 @@ public enum Type: Int, Sendable {
 
 // MARK: - JSON Base
 
+/// - Warning: `@unchecked Sendable` suppresses Swift's data-race detection. `JSON` is a mutable struct —
+///   callers must ensure that any `var JSON` instance is not accessed from multiple threads concurrently.
 public struct JSON: @unchecked Sendable {
 
 	/**
@@ -170,15 +172,17 @@ public struct JSON: @unchecked Sendable {
     }
 
     /**
-     Private woker function which does the actual merging
-     Typecheck is set to true for the first recursion level to prevent total override of the source JSON
+     Private worker function which does the actual merging.
+     Typecheck is set to true for the first recursion level to prevent total override of the source JSON.
+     Depth is decremented on each recursive call; throws `.elementTooDeep` if it reaches zero.
  	*/
- 	fileprivate mutating func merge(with other: JSON, typecheck: Bool) throws {
+ 	fileprivate mutating func merge(with other: JSON, typecheck: Bool, depth: Int = 512) throws {
+        guard depth > 0 else { throw SwiftyJSONError.elementTooDeep }
         if type == other.type {
             switch type {
             case .dictionary:
                 for (key, _) in other {
-                    try self[key].merge(with: other[key], typecheck: false)
+                    try self[key].merge(with: other[key], typecheck: false, depth: depth - 1)
                 }
             case .array:
                 self = JSON(arrayValue + other.arrayValue)
@@ -257,15 +261,19 @@ public struct JSON: @unchecked Sendable {
     public static var null: JSON { return JSON(NSNull()) }
 }
 
-/// Private method to unwarp an object recursively
-private func unwrap(_ object: Any) -> Any {
+private let unwrapDepthLimit = 512
+
+/// Private method to unwrap an object recursively.
+/// Stops at `unwrapDepthLimit` to prevent a stack overflow on pathologically deep input.
+private func unwrap(_ object: Any, depth: Int = unwrapDepthLimit) -> Any {
+    guard depth > 0 else { return object }
     switch object {
     case let json as JSON:
-        return unwrap(json.object)
+        return unwrap(json.object, depth: depth - 1)
     case let array as [Any]:
-        return array.map(unwrap)
+        return array.map { unwrap($0, depth: depth - 1) }
     case let dictionary as [String: Any]:
-        return dictionary.mapValues(unwrap)
+        return dictionary.mapValues { unwrap($0, depth: depth - 1) }
     default:
         return object
     }
@@ -561,23 +569,13 @@ extension JSON: Swift.RawRepresentable {
 	}
 
 	public func rawString(_ encoding: String.Encoding = .utf8, options opt: JSONSerialization.WritingOptions = .prettyPrinted) -> String? {
-		do {
-			return try _rawString(encoding, options: [.jsonSerialization: opt])
-		} catch {
-			print("Could not serialize object to JSON because:", error.localizedDescription)
-			return nil
-		}
+		return try? _rawString(encoding, options: [.jsonSerialization: opt])
 	}
 
 	public func rawString(_ options: [writingOptionsKeys: Any]) -> String? {
 		let encoding = options[.encoding] as? String.Encoding ?? String.Encoding.utf8
 		let maxObjectDepth = options[.maxObjextDepth] as? Int ?? 10
-		do {
-			return try _rawString(encoding, options: options, maxObjectDepth: maxObjectDepth)
-		} catch {
-			print("Could not serialize object to JSON because:", error.localizedDescription)
-			return nil
-		}
+		return try? _rawString(encoding, options: options, maxObjectDepth: maxObjectDepth)
 	}
 
 	fileprivate func _rawString(_ encoding: String.Encoding = .utf8, options: [writingOptionsKeys: Any], maxObjectDepth: Int = 10) throws -> String? {
@@ -860,7 +858,10 @@ extension JSON {
 
 extension JSON {
 
-    //Optional URL
+    /// Optional URL parsed from the string value.
+    /// - Warning: Percent-encoding uses `urlQueryAllowed`, which permits characters like `?`, `#`, `&`, `=`.
+    ///   Always validate the scheme and components of the returned URL before using it in a network request
+    ///   to avoid open-redirect or SSRF issues with attacker-controlled JSON input.
     public var url: URL? {
         get {
             switch type {

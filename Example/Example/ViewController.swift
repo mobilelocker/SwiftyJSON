@@ -52,8 +52,8 @@ class ViewController: UITableViewController {
             cell.textLabel?.text = "\(row)"
             cell.detailTextLabel?.text = self.json.arrayValue.description
         case .dictionary:
-            let key: Any = Array(self.json.dictionaryValue.keys)[row]
-            let value = self.json[key as! String]
+            let key = Array(self.json.dictionaryValue.keys)[row]
+            let value = self.json[key]
             cell.textLabel?.text = "\(key)"
             cell.detailTextLabel?.text = value.description
         default:
@@ -85,7 +85,9 @@ class ViewController: UITableViewController {
             default:
                 print("")
             }
-            (nextController as! ViewController).json = nextJson
+            if let vc = nextController as? ViewController {
+                vc.json = nextJson
+            }
             print(nextJson)
         }
     }
